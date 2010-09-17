@@ -12,7 +12,7 @@ BitlyHelper is a CakePHP helper for bitly api.
 
 - CakePHP >= 1.2
 - PHP >= 4
-- json_decode() function is available. if you don't have it, install upgrade.php(http://upgradephp.berlios.de/) into you vendors diretory.
+- json_decode() function is available. if you don't have it, install upgrade.php(http://upgradephp.berlios.de/) into your vendors diretory.
 
 ## Setup ##
 
@@ -28,6 +28,22 @@ or
 In controller's property section:
 	var $helpers = array( ... , 'Bitly.Bitly');
 
+In somewhere you should define:
+	Configure::write('Bitly', array(
+		'user_name' => 'your_acount_name',
+		'api_token' => 'your_api_key_for_authentication',
+	);
+
+or
+
+	$helpers = array(
+		...
+		'Bitly' => array(
+			'user_name' => 'your_acount_name',
+			'api_token' => 'your_api_key_for_authentication',
+		),
+		...
+	);
 ## Usage ##
 
 On your view,
