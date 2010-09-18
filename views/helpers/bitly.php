@@ -34,7 +34,16 @@ class BitlyHelper extends AppHelper {
  * @var string uri
  * @access public
  */
-	var $baseUri = "http://api.bit.ly/v3/";
+	var $baseUri = 'http://api.bit.ly/v3/';
+
+/**
+ * domain for shorten api.
+ * 'bit.ly' default or 'j.mp'
+ *
+ * @var string domain
+ * @access public
+ */
+	var $domain = 'bit.ly';
 
 /**
  * login param for api
@@ -107,6 +116,15 @@ class BitlyHelper extends AppHelper {
 	var $retry = true;
 
 /**
+ * Http client for post request.
+ *
+ * @var object HttpSocket
+ * @access public
+ */
+	var $client;
+
+
+/**
  * Constructing and configuration.
  * "Bitly" is user configuration key.
  *
@@ -143,24 +161,84 @@ class BitlyHelper extends AppHelper {
  * @return mixed shortened url or null(failed)
  * @access public
  */
-	function shorten($longUrl){
+	function shorten($longUrl, $params = array()){
+		$raw = false;
+		if (isset($params['raw'])) {
+			$raw = $params['raw'];
+			unset($params['raw']);
+		}
+		$params['domain'] = $this->domain;
+
 		$longUrl = trim($longUrl);
 		$cache = $this->_loadCache('shorten');
+		$cacheKey = $longUrl . serialize($params);
 		if (!empty($cache)) {
-			if (isset($cache[$longUrl])) {
-				return $cache[$longUrl];
+			if (isset($cache[$cacheKey])) {
+				return $raw ? $cache[$cacheKey] : $cache[$cacheKey]->data->url;
 			}
 		} else {
 			$cache = array();
 		}
 
-		$result = $this->get('shorten', compact('longUrl'));
+		$result = $this->get('shorten', compact('longUrl') + $params);
 		if($result === null){
 			return null;
 		}
-		$cache[$longUrl] = $result->data->url;
+		$cache[$cacheKey] = $result;
 		$this->_saveCache('shorten', $cache);
-		return $result->data->url;
+		return $raw ? $result : $result->data->url;
+	}
+
+/**
+ * method for "expand" api. this uses cache.
+ *
+ * @param string $shortUrl url or hash to expand
+ * @return mixed expanded url or null(failed)
+ * @access public
+ */
+	function expand($shortUrl, $params = array()){
+		$raw = false;
+		if (isset($params['raw'])) {
+			$raw = $params['raw'];
+			unset($params['raw']);
+		}
+
+		$cache = $this->_loadCache('expand');
+
+		$toGet = array();
+		$cached = array();
+		$updateCache = false;
+		foreach ((array)$shortUrl as $index => $value) {
+			$value = trim($value);
+			$hash = preg_match('#http://(bit\.ly|j\.mp)/(.+)#', $value, $matches) ? $matches[2] : $value;
+			if (!isset($cache[$hash])) {
+				$toGet[] = $hash;
+				$updateCache = true;
+			} else {
+				$cached[$hash] = $cache[$hash];
+			}
+		}
+
+		if ($updateCache) {
+			$result = $this->get('expand', array('hash' => $toGet));
+			if($result === null){
+				return null;
+			}
+
+			foreach ($result->data->expand as $data) {
+				$cache[$data->hash] = $data;
+				$cached[$data->hash] = $data;
+			}
+
+			$this->_saveCache('expand', $cache);
+		}
+
+		if (!$raw) {
+			foreach ($cached as $hash => $data) {
+				$cached[$hash] = $data->long_url;
+			}
+		}
+		return count($cached) == 1 ? current($cached) : $cached;
 	}
 
 /**
@@ -195,6 +273,37 @@ class BitlyHelper extends AppHelper {
 	}
 
 /**
+ * api requrest with post method.
+ *
+ * @param string $api api name
+ * @param array $params parameters for api
+ * @return mixed object-mapped data or null(failed)
+ * @access public
+ */
+	function post($api, $params){
+		$params += array('format' => 'json');
+		$url = $this->generateUrl($api, $params);
+		$result = $this->_postDecode($url);
+
+		if (!empty($result) && isset($result->status_code) && $result->status_code == 200) {
+			return $result;
+		}
+		if ($this->retry) {
+			$retry = $this->retry === true ? 1 : intval($this->retry);
+			$i = 0;
+			do {
+				$result = $this->_postDecode($url);
+				if(!empty($result) && isset($result->status_code) && $result->status_code == 200){
+					return $result;
+				}
+				$i++;
+			} while($i < $retry);
+		}
+		
+		return null;
+	}
+
+/**
  * get contents from url and parse it.
  *
  * @param string $url url
@@ -211,21 +320,87 @@ class BitlyHelper extends AppHelper {
 	}
 
 /**
+ * post contents from url and parse it.
+ *
+ * @param string $url url
+ * @return mixed object-mapped data or null(failed)
+ * @access public
+ */
+	function _postDecode($url) {
+		$uri = parse_url($url);
+		if (!$uri) {
+			return null;
+		}
+		$data = $uri['query'];
+		unset($uri['query']);
+
+		App::import('Core', 'HttpSocket');
+		$this->client = new HttpSocket;
+		$result = $this->client->post($uri, $data);
+		if (empty($result)) {
+			return null;
+		}
+		$result = json_decode($result);
+		return $result;
+	}
+
+/**
  * generating url from api name and parameters.
  *
  * @param string $api api name
  * @param array $params parameters for api
- * @return genareted url
+ * @return mixed genareted url or null
  * @access public
  */
-	function generateUrl($api, $params){
+	function generateUrl($api, $params = array(), $key = null){
 		$url = $this->baseUri . $api . "?";
 		$params += $this->_authenticateParams();
-		foreach ($params as $key => $param) {
-			$params[$key] = $key . "=" . urlencode($param);
+
+		if (isset($params['_key']) && $key === null) {
+			$key = $params['_key'];
+			unset($params['_key']);
 		}
-		$url .= implode('&', $params);
+		$url .= $this->_generateQuery($params, $key);
 		return $url;
+	}
+
+/**
+ * generating uri queries from parameters.
+ *
+ * @param array $params parameters for api
+ * @param string $key key for same query name(ex. hoge=1&hoge=3)
+ * @return mixed genareted uri query or null
+ * @access protected
+ */
+
+	function _generateQuery($params, $key = null) {
+		if (empty($params)) {
+			return null;
+		}
+
+		if (Set::numeric(array_keys($params)) && $key !== null) {
+			foreach ($params as $index => $param) {
+				$params[$index] = urlencode($key) . "=" . urlencode($param);
+			}
+			return implode('&', $params);
+		}
+
+		foreach ($params as $index => $param) {
+			if (is_array($param)) {
+				if (Set::numeric(array_keys($param))) {
+					if ($key === null) {
+						$key = $index;
+					}
+					$params[$index] = $this->_generateQuery($param, $key);
+				} else {
+					trigger_error(__('parameters cannot be complicated array', true));
+					continue;
+				}
+			} else {
+				$params[$index] = urlencode($index) . "=" . urlencode($param);
+			}
+		}
+		return implode('&', $params);
 	}
 
 /**

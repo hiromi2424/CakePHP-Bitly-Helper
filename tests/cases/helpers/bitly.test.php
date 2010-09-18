@@ -21,8 +21,8 @@ class BitlyHelperTestCase extends CakeTestCase {
 
 		$b =& $this->Bitly;
 
-		$this->assertEqual($b->user_name, Configure::read('Bitly.user_name'));
-		$this->assertEqual($b->api_token, Configure::read('Bitly.api_token'));
+		$this->assertEqual($b->user_name, $this->config['user_name']);
+		$this->assertEqual($b->api_token, $this->config['api_token']);
 	}
 
 	function testGenerateUrl() {
@@ -30,8 +30,19 @@ class BitlyHelperTestCase extends CakeTestCase {
 		$b->user_name = "test_user_name";
 		$b->api_token = "test_api_token";
 
-		$this->assertEqual($b->generateUrl('api_name', array()), 'http://api.bit.ly/v3/api_name?login=test_user_name&apiKey=test_api_token');
+		$this->assertEqual($b->generateUrl('api_name'), 'http://api.bit.ly/v3/api_name?login=test_user_name&apiKey=test_api_token');
 		$this->assertEqual($b->generateUrl('api_name', array('testparam' => 'testvalue')), 'http://api.bit.ly/v3/api_name?testparam=testvalue&login=test_user_name&apiKey=test_api_token');
+		$this->assertEqual($b->generateUrl('api_name', array('testparam' => 'testvalue', 'test_subarray' => array('hoge', 'piyo'))), 'http://api.bit.ly/v3/api_name?testparam=testvalue&test_subarray=hoge&test_subarray=piyo&login=test_user_name&apiKey=test_api_token');
+		$this->assertEqual($b->generateUrl('api_name', array('testparam' => 'testvalue', array('hoge', 'piyo')), 'test_subarray'), 'http://api.bit.ly/v3/api_name?testparam=testvalue&test_subarray=hoge&test_subarray=piyo&login=test_user_name&apiKey=test_api_token');
+		$this->assertEqual($b->generateUrl('api_name', array('testparam' => 'testvalue', array('hoge', 'piyo'), '_key' => 'test_subarray')), 'http://api.bit.ly/v3/api_name?testparam=testvalue&test_subarray=hoge&test_subarray=piyo&login=test_user_name&apiKey=test_api_token');
+	}
+
+	function testGenerateQuery() {
+		$b =& $this->Bitly;
+
+		$this->assertEqual($b->_generateQuery(array('test_key' => 'test value')), 'test_key=test+value');
+		$this->assertEqual($b->_generateQuery(array('test value', 'test value2'), 'test_key'), 'test_key=test+value&test_key=test+value2');
+		$this->assertEqual($b->_generateQuery(array('test_key' => 'test_value_hoge', array('test value', 'test value2')), 'test_key'), 'test_key=test_value_hoge&test_key=test+value&test_key=test+value2');
 	}
 
 	function testAuthenticateParams() {
@@ -96,6 +107,17 @@ class BitlyHelperTestCase extends CakeTestCase {
 		$this->assertEqual($b->get('validate', array('x_login' => 'invalid_login', 'x_apiKey' => 'invalid_apiKey')), $expected);
 	}
 
+	function testPost() {
+		$this->skipIf(!function_exists('json_decode'), __('BitlyHelper requires json_decode() function', true));
+		$b =& $this->Bitly;
+
+		$this->assertEqual($b->post('invaild_api', array()), null);
+
+		$b->post('authenticate', array('x_login' => 'invalid_login', 'x_password' => 'invalid_password'));
+		$this->assertEqual($b->client->request['line'], "POST /v3/authenticate HTTP/1.1\r\n");
+		$this->assertEqual($b->client->request['body'], 'x_login=invalid_login&x_password=invalid_password&format=json&login=' . $this->config['user_name'] . '&apiKey=' . $this->config['api_token']);
+	}
+
 	function testShorten() {
 		$this->skipIf(!function_exists('json_decode'), __('BitlyHelper requires json_decode() function', true));
 		$b =& $this->Bitly;
@@ -103,8 +125,35 @@ class BitlyHelperTestCase extends CakeTestCase {
 		$this->assertPattern('|http://|', $b->shorten('http://example.com'));
 		$this->assertTrue($b->__cacheUpdated);
 
-		$this->assertPattern('|http://|', $b->shorten('http://example.com'));
+		$b->domain = 'j.mp';
+		$this->assertPattern('|http://j\.mp/|', $b->shorten('http://example.com'));
 		$this->assertNull($b->shorten('example.com'));
+
+		$result = $b->shorten('http://example.com', array('raw' => true));
+		$this->assertEqual($result->status_code, 200);
+		$this->assertEqual($result->status_txt, 'OK');
+		$this->assertEqual($result->data->long_url, 'http://example.com');
+		$this->assertPattern('|http://j\.mp/|', $result->data->url);
+
+		Cache::delete($b->cache_key);
+	}
+
+	function testExpand() {
+		$this->skipIf(!function_exists('json_decode'), __('BitlyHelper requires json_decode() function', true));
+		$b =& $this->Bitly;
+
+		$shortened = array();
+		$shortened[] = $b->shorten('http://example.com', array('raw' => true));
+		$shortened[] = $b->shorten('http://example.com/hogehoge', array('raw' => true));
+
+		$this->assertEqual($b->expand($shortened[0]->data->url), 'http://example.com');
+		$this->assertTrue($b->__cacheUpdated);
+
+		$result = $b->expand(array($shortened[0]->data->url, $shortened[1]->data->url));
+		$expected = array($shortened[0]->data->hash => 'http://example.com', $shortened[1]->data->hash => 'http://example.com/hogehoge');
+		$this->assertEqual($result, $expected);
+
+		Cache::delete($b->cache_key);
 	}
 
 	function testNoConfig() {

@@ -17,7 +17,7 @@ BitlyHelper is a CakePHP helper for bitly api.
 ## Setup ##
 
 With console:
-	cd /path/to/plugin/
+	cd /path/to/plugins/
 	git clone git://github.com/hiromi2424/CakePHP-Bitly-Helper.git bitly
 
 or
